@@ -1,0 +1,345 @@
+#svl
+//
+//	import_clash_check_soap.svl	Import Clash Check data
+//
+//	25-sep-2018	(at)	created based on torsion checker svl
+//
+// COPYRIGHT (C) 2018 CHEMICAL COMPUTING GROUP ULC ("CCG").
+// ALL RIGHTS RESERVED.
+//
+// PERMISSION TO USE, COPY, MODIFY AND DISTRIBUTE THIS SOFTWARE IS HEREBY
+// GRANTED PROVIDED THAT: (1) UNMODIFIED OR FUNCTIONALLY EQUIVALENT SOFTWARE
+// DERIVED FROM THIS SOFTWARE MUST CONTAIN THIS NOTICE; (2) ALL CODE DERIVED
+// FROM THIS SOFTWARE MUST ACKNOWLEDGE THE AUTHOR(S) AND INSTITUTION(S); (3)
+// THE NAMES OF THE AUTHOR(S) AND INSTITUTION(S) NOT BE USED IN ADVERTISING
+// OR PUBLICITY PERTAINING TO THIS SOFTWARE WITHOUT SPECIFIC WRITTEN PRIOR
+// PERMISSION; (4) ALL CODE DERIVED FROM THIS SOFTWARE BE EXECUTED WITH THE
+// MOLECULAR OPERATING ENVIRONMENT LICENSED FROM CCG.
+//
+// CCG DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE, INCLUDING
+// ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS, AND IN NO EVENT
+// SHALL CCG BE LIABLE FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR
+// ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER
+// IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
+// OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+//
+//
+//	DESCRIPTION
+//	Import Clash Check data
+//
+//	USAGE: run this file
+//
+
+#set title 	'Pose Processor Import'
+#set class 	'CCG:Support'
+#set version 	'2022.02'
+
+const SERVER_URL = 'http://moe-soap.bas.roche.com:8890';
+// const SERVER_URL = 'http://rkanc004is02.eth.rsiec.kau.science.roche.com:8888';
+const CLASH_COUNTS = ['acc_acc_contact', 'don_don_contact', 'intramolecular_steric_clashes', 'cis_amides', 'q2_gmean'];
+
+#if OS_MSWIN
+const MAXMOLS = 2000;
+#else
+const MAXMOLS = 10000;
+#endif
+
+function db_ExportSD;
+
+local function ImportPoseProcessorData[dbfile, datafile]
+    local ents = db_Entries dbfile;
+    local molnames = [];
+    local ient;
+//previous    local molfield = db_FirstFieldType[dbfile, 'molecule'];
+    local fields = db_Fields dbfile;
+    local selfields = dbv_FieldSelection dbfile;
+    if anytrue selfields then
+	selfields = fields(1) | selfields and m_join[
+	    fields(2), ['moe', 'molecule']
+	];
+	if length selfields > 1 then
+	    selfields = first selfields;
+	endif
+    else
+	selfields = [];
+    endif
+    if isnull selfields then
+	selfields = fields(1) | m_join[fields(2), ['moe', 'molecule']];
+	if length selfields > 1 then
+	    selfields = first selfields;
+	endif
+    endif
+    local molfield = selfields;
+    if isnull molfield then
+	exit 'Ligand field not found';
+    endif
+
+    for ient in ents loop
+	local mol = first db_ReadFields[dbfile, ient, molfield];
+
+	molnames = cat[molnames, mol(1)(MOL_NAME)];
+    endloop
+    apt db_EnsureField[dbfile, CLASH_COUNTS, 'float'];
+    local lines = dropfirst freadb[datafile, 'line', INT_MAX];
+    lines = apt fieldsplit[lines, "\t"];
+    local i;
+    for i = 1, length lines loop
+	local iname = token first lines(i);
+	local llen = length lines(i);
+//	local idata = atoi app token dropfirst lines(i);
+	local idata = [];
+	local nidx = 0;
+
+	if llen > 1 then
+	    // error handling for e.g. >> "Molecule 238 could not be initialized."
+	    idata = atof app token cat [lines(i)[2],lines(i)[3],lines(i)[4],lines(i)[5],lines(i)[6]];
+	    nidx = indexof[iname, molnames];
+        endif
+	if nidx > 0 then
+	    db_Write[dbfile, ents(nidx), tag[CLASH_COUNTS, idata]];
+	// else
+	//     pr "molecule names not identical. please check";
+	endif
+    endloop
+endfunction
+
+
+//------------------------------------------------------------------------------
+// soap service
+//------------------------------------------------------------------------------
+
+global function soap_spec_PoseProcessor []
+    local input = [
+	MDBfile_base64: [
+	    type: 'file',
+	    description: 'Input MDB file'
+	],
+	molfield: [
+	    type: 'string',
+	    description: 'Molecule Field Name'
+	]
+    ];
+    local output = [
+	datafile: [
+	    type: 'string' ,
+	    description: 'Data file from Clash Check'
+	]
+    ];
+    local description = [
+    	title: 'PoseProcessor Interface',
+    	description: 'Get PoseProcessor data for uploaded MDB'
+    ];
+    return [input, output, description];
+endfunction
+
+global function soap_PoseProcessor[arg, opt]
+    local dbkey = db_Open arg.MDBfile_base64;
+    local molfield = arg.molfield;
+     if isnull molfield then
+        molfield = db_FirstFieldType[dbkey, 'molecule'];
+    endif
+
+    print 'soap_PoseProcessor';// for logging purposes
+
+    // export mdb as sdf
+    local sdfile = fnametemp 'moetemp*.sdf';
+    db_ExportSD[dbkey, sdfile, [], [], [depict2D:0, del_hlp: 0]];
+
+    // call executable
+    local log_file = 'MOE_TMP/_intramol_check.log';
+    local cmd = twrite['/ccdc_roche_scoring/moe/pose_processor/import_pose_processor.sh {} {} > {} 2>&1', fabsname sdfile, fabsname TMP, log_file];
+    print cmd;
+    local ekey = exe_open_shell[cmd, '', []];
+
+    while exe_status ekey loop
+        sleep 1;
+    endloop
+
+    // import results
+    local datafile = 'clash_check.csv';
+    local data = freadb[datafile, 'char', INT_MAX];
+
+    _fdelete datafile;
+    _fdelete sdfile;
+    return [datafile: data];
+endfunction
+
+local function explicit_hydrogens_present [mdb, ligand_field]
+    local entries = db_Entries mdb;
+    local i; for i = 1, length entries loop
+        local mol = first db_ReadFields[mdb, entries(i), ligand_field];
+        local is_h = mol(4)(1) == 'H';
+        local h_count = add is_h;
+        if h_count === 0 then
+            print "Entry without explicit hydrogen: ";
+            print i;
+            break;
+        endif
+    endloop;
+
+    if h_count < 5 then
+            print "Entry without hydrogen: ";
+            print i;
+            return 0;
+    else
+        return 1;
+    endif
+
+endfunction
+
+local function unpack_data data
+    local splitdata = apt wordsplit [wordsplit [data, "\n"], "\t"];
+    return [app token first splitdata, atof app token last splitdata];
+endfunction
+
+global function _LIGX_LigandProperties_2D_acc_acc_contact atoms
+    local data = "acc_acc_contact\tdon_don_contact\tsteric_clash\tq2_gmean\n3.14\t0\t0\n";
+    local unpacked = unpack_data data;
+    local idx = indexof ['acc_acc_contact', first unpacked];
+    return apt get [unpacked, idx];
+endfunction
+
+global function _LIGX_LigandProperties_2D_don_don_contact atoms
+    local data = "acc_acc_contact\tdon_don_contact\tsteric_clash\tq2_gmean\n0\t0\t0\n";
+    local unpacked = unpack_data data;
+    local idx = indexof ['don_don_contact', first unpacked];
+    return apt get [unpacked, idx];
+endfunction
+
+global function _LIGX_LigandProperties_2D_steric_clash atoms
+    local data = "acc_acc_contact\tdon_don_contact\tsteric_clash\tq2_gmean\n0\t0\t0\n";
+    local unpacked = unpack_data data;
+    local idx = indexof ['intramolecular_steric_clashes', first unpacked];
+    return apt get [unpacked, idx];
+endfunction
+
+global function _LIGX_LigandProperties_2D_q2_gmean atoms
+    local data = "acc_acc_contact\tdon_don_contact\tsteric_clash\tq2_gmean\n0\t0\t0\n";
+    local unpacked = unpack_data data;
+    local idx = indexof ['q2_gmean', first unpacked];
+    return apt get [unpacked, idx];
+endfunction
+
+
+global function MOE_PoseProcessor []
+    local ligand_atoms = mget [Atoms[], aClassRLS Atoms[] == 'lig'];
+    ligand_atoms = ligand_atoms | not aInert ligand_atoms and not aHidden ligand_atoms;
+    local num_lig = length uniq aMoleculeNumber ligand_atoms;
+    if  num_lig < 1 then // (length uniq aMoleculeNumber lig) < 1
+        exit 'Please ensure there is at least one visible and active ligand';
+    endif
+    local temp_mdb = fabsname fnametemp tok_cat [TMP, '/', 'moetemp*.mdb'];
+    print temp_mdb;
+    local mdb_key = db_Open [temp_mdb, 'create'];
+    db_EnsureField [ mdb_key, 'mol', 'molecule' ];
+    local mol =  mol_Extract ligand_atoms;
+    db_Write [ mdb_key, 0, ['mol': mol] ];
+    db_Close mdb_key;
+
+    local opt = [
+	MDBfile_base64: r64_encode freadb [temp_mdb, 'char', INT_MAX],
+	MDBfile_base64Content:'base64',
+	molfield: string 'mol'
+    ];
+
+    local messagekey = Message[0, 'Running clash analysis ...'];
+    print  'Running clash analysis ...';
+    local [result, code] = web_Call [
+	'PoseProcessor',
+	opt,
+	[server: SERVER_URL]
+    ];
+    Message[messagekey, []];
+
+    if isnull result then
+	    Warning twrite ['Server response: {}\n', code];
+    else
+        local data = result.datafile;
+        local unpacked, fmt, text, msg;
+        unpacked = unpack_data data;
+        fmt=twrite['     {{.-{}}: {{n:7.2f}\n', inc max tok_length first unpacked];
+        text = tok_cat apt twrite cat append [fmt, unpacked];
+        msg = Message [0, text];
+        sleep 15;
+    endif
+    fdelete temp_mdb;
+endfunction
+
+local function main[]
+    local mdb = dbv_DefaultView[];
+
+    local jopt =  [server: SERVER_URL];
+    if first web_GetServerPing jopt.server then
+		Warning 'Unable to contact MOE/web server. Exit.';
+		return [];
+	else
+	    print 'Server connection successful';
+    endif
+
+    local num_entries = db_nEntries mdb;
+    if num_entries > MAXMOLS then
+	exit twrite [
+	    'Number of ligands {n:} exceeds maximum {n:}', num_entries, MAXMOLS
+	];
+    endif
+
+    local molfield = db_FirstFieldType[mdb, 'molecule'];
+
+    if not explicit_hydrogens_present [mdb, molfield] then
+        Warning 'Make sure all ligands have explicit hydrogens added';
+        return 1;
+    endif
+
+    local entrypool = db_Entries mdb;
+    if dbv_nSelectedEntries mdb > 0 then
+	entrypool = dbv_SelectedEntries mdb;
+    endif
+    local ents = [];
+    local ids = [];
+    local ent = 0;
+    for ent in entrypool loop
+	local mol = first db_ReadFields[mdb, ent, molfield];
+	ents = cat [ents, ent];
+	ids = cat[ids, mol(1)(MOL_NAME)];
+    endloop
+
+    if length sortuniq ids <> length ids then
+       exit 'Please make sure all molecule names are unique';
+    endif
+
+    local dbf = db_Filename mdb;
+
+    dbv_Close mdb;
+    local opt = [
+	MDBfile_base64: r64_encode freadb [dbf, 'char', INT_MAX],
+	MDBfile_base64Content:'base64',
+	molfield: string 'mol'
+    ];
+    mdb = dbv_Open dbf;
+
+    local messagekey = Message[0, 'Running clash analysis ...'];
+print  'Running clash analysis ...';
+    local [result, code] = web_Call [
+	'PoseProcessor',
+	opt,
+	[server: SERVER_URL]
+    ];
+
+    Message[messagekey, []];
+
+    if isnull result then
+	Warning twrite ['Server response: {}\n', code];
+    else
+
+    local data = result.datafile;
+    local datafilename = fabsname '$DOWNLOADS/clash_check.csv';
+    print fname datafilename;
+    fwriteb [datafilename, 'char', data];
+
+    ImportPoseProcessorData[mdb, datafilename];
+
+    endif
+endfunction
+
+
+#eof

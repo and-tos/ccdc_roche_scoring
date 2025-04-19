@@ -1,0 +1,530 @@
+#svl
+
+#set title	'Q-value Anayzer'
+#set version	'2023.07'
+#set class 	'CCG:Support'
+
+const SERVER_URL = 'http://moe-soap.bas.roche.com:8890';
+// const SERVER_URL = 'http://rkanc004is02.eth.rsiec.kau.science.roche.com:8888';
+
+const TASK_TITLE = 'Ligand Torsion q-values';
+const SHOW_PANEL = 0;				// show GUI panel (RC def)
+
+#if OS_MSWIN
+const MAXMOLS = 2000;
+#else
+const MAXMOLS = 10000;
+#endif
+
+function db_ExportSD;
+function parse_line;
+
+
+const LIST_HEADER =
+    'Q{:}\tAtom 1\tAtom 2\tSubstructure name\tDihedral{-}\tDihedral name'
+;
+
+const LIST_HEADERBUBBLEHELP =
+    'Quality score: {1,2,3} = {good,medium,bad} geometry.'
+    '\tName of first atom in dihedral.'
+    '\tName of second atom in dihedral.'
+    '\tSubstructure name.'
+    '\tMeasured dihedral angle.'
+;
+
+const LIST_BUBBLEHELP =
+    'The individual dihedrals are matched with SMARTS patterns.\n'
+    'The dihedral geometry is considered (1) Good if it is in the\n'
+    'first confidence interval from optimal; (2) Medium if in second\n'
+    'confidence interval in parenthesis; otherwise (3) Bad.'
+;
+
+
+//------------------------------------------------------------------------------
+// soap service
+//------------------------------------------------------------------------------
+
+global function soap_spec_QValues []
+    local input = [
+	MDBfile_base64: [
+	    type: 'file',
+	    description: 'Input MDB file'
+	],
+	molfield: [
+	    type: 'string',
+	    description: 'Molecule Field Name'
+	],
+    gmean: [
+	    type: 'token',
+	    description: 'Return gmean only'
+	]
+    ];
+    local output = [
+	datafile: [
+	    type: 'string' ,
+	    description: 'Data file from QValues'
+	]
+    ];
+    local description = [
+    	title: 'PoseProcessor Interface',
+    	description: 'Get PoseProcessor data for uploaded MDB'
+    ];
+    return [input, output, description];
+endfunction
+
+global function soap_QValues[arg, opt]
+    local dbkey = db_Open arg.MDBfile_base64;
+    local molfield = arg.molfield;
+     if isnull molfield then
+        molfield = db_FirstFieldType[dbkey, 'molecule'];
+    endif
+
+    print 'soap_QValues';// for logging purposes
+
+    // export mdb as sdf
+    local sdfile = fnametemp 'moetemp*.sdf';
+    db_ExportSD[dbkey, sdfile, [], [], [depict2D:0, del_hlp: 0]];
+
+    // call executable
+    local log_file = 'MOE_TMP/_intramol_check.log';
+    // local log_file = '/tmp/_q_values.log';
+    local datafile = fabsname fnametemp tok_cat [TMP, '/', 'moetemp*.csv'];
+    local cmd = twrite['moe/pose_processor/import_q_values.sh {} {} {} > {} 2>&1', fabsname sdfile, fabsname datafile, arg.gmean, log_file];
+    print cmd;
+    local ekey = exe_open_shell[cmd, '', []];
+
+    while exe_status ekey loop
+        sleep 1;
+    endloop
+
+    // import results
+    // local datafile = 'q_values.csv';
+    local data = freadb[datafile, 'char', INT_MAX];
+    _fdelete datafile;
+    _fdelete sdfile;
+    return [datafile: data];
+endfunction
+
+// gmean: Calculate geometric mean value.
+local function gmean v = pow [mul v, invz length v];
+
+local function q_value_quality [q_value]
+    local quality;
+    if q_value >= 0.9 then
+        quality = 1;
+    elseif 0.9 > q_value and q_value >= 0.5 then
+        quality = 2;
+    elseif 0.5 > q_value and q_value > 0.1 then
+        quality = 3;
+    elseif q_value <= 0.1 then
+        quality = 4;
+    endif
+    return quality;
+endfunction
+
+
+local function explicit_hydrogens_present [mdb, ligand_field]
+    local entries = db_Entries mdb;
+    local i; for i = 1, length entries loop
+        local mol = first db_ReadFields[mdb, entries(i), ligand_field];
+        local is_h = mol(4)(1) == 'H';
+        local h_count = add is_h;
+        if h_count === 0 then
+            print "Entry without explicit hydrogen: ";
+            print i;
+            break;
+        endif
+    endloop;
+
+    if h_count < 5 then
+            print "Entry without hydrogen: ";
+            print i;
+            return 0;
+    else
+        return 1;
+    endif
+
+endfunction
+
+local function RenderQuality [gkey, lig_atoms, Tbond, q_values]
+    local quality = apt q_value_quality [q_values];
+    const COLORS = [0x007fff, 0x2a8cff, 0xffa64d, 0xff2052]; // good|medium|bad angles
+
+    if isfalse GKey gkey then
+	gkey = GOpen [];
+	GSetTitle [gkey, TASK_TITLE];
+	GSetClass [gkey, '.private'];
+    else
+	GClearVertexData gkey;
+    endif
+
+    local bonds = apt get [[lig_atoms], Tbond];
+
+    if isnull bonds then
+	bonds = [[],[]];
+	quality = [];
+    endif
+
+    // Render only the bonds where atoms are actually shown.
+    quality = int quality;
+    local mask = ( not orE aHidden bonds and leE [1, quality, 4]);
+    bonds = bonds || [mask];
+    quality = quality | mask;
+    // The radius of the rendered cylinder depends on the radius of the
+    // respective bond.
+    local vsetup = ViewSetup [];
+    local radius = rep [vsetup.bond_line_radius, l_length bonds];
+    (radius | orE (aBondLook bonds == 'cylinder')) = vsetup.atom_bond_radius;
+
+    // Get the vertex data for the cylinders and render them.
+    local org = aPos bonds(1);
+    local vec = aPos bonds(2) - aPos bonds(1);
+    local label_pos = (aPos bonds(1) + 0.2 + (aPos bonds(2) - aPos bonds(1)) / 2);
+    local gvtx_data = G_Cylinder [
+    (cat [0xFFFFFFFF, COLORS])[inc quality]
+    ,	org + 0.25 * vec, 0.5 * vec, radius = radius + 0.05
+    ,	2
+    ];
+    GVertex prepend [gvtx_data, gkey];
+
+    // TODO // connect two dimensional q-values
+    // local _lp = tr (aPos bonds(1) + (aPos bonds(2) - aPos bonds(1)) / 2);
+    // org = _lp(1);
+    // vec = _lp(2) - _lp(1);
+    // gvtx_data = G_Cylinder [
+    // (cat [0xFFFFFFFF, COLORS])[inc quality]
+    // ,	org + vec, -1 * vec, radius = radius - 0.1
+    // ,	2
+    // ];
+    // GVertex prepend [gvtx_data, gkey];
+
+
+    GText  [gkey, (cat [0xFFFFFFFF, COLORS])[inc quality]
+    ,	cat label_pos[1], cat label_pos[2], cat label_pos[3]
+    ,	tok_keep [totok q_values, 4]
+    ];
+
+    return gkey;
+endfunction
+
+
+local function parse_q_values [data]
+    local csv_data = apt wordsplit [wordsplit [data, "\n"], "\t"];
+    local columns = app token first csv_data;
+    local [bonds1, bonds2, q_values, substructure_names, dihedrals, dihedral_names] = tr dropfirst csv_data;
+    q_values = atof app token q_values;
+    dihedrals = atof app token dihedrals;
+    local bonds = [atoi app token bonds1 +1, atoi app token bonds2 +1];
+    return [bonds, q_values, substructure_names, dihedrals, dihedral_names];
+endfunction
+
+
+local function render_q_values [data, tlist]
+    local [Tbonds,q_values, substructure_names, dihedrals, dihedral_names] = parse_q_values [data];
+    if length cat cat q_values === 0 then
+        exit 'No q-value statistics available.';
+    return;
+    endif
+    // local panel = GetRCBoolean ['LigX.QValues.panel', SHOW_PANEL];
+
+    // If the analyzer is already running then take it down.
+	// Otherwise, detach from caller and launch.
+    task_settitle [-1, TASK_TITLE];
+    local mkey = Message [0, twrite ['{} ...', TASK_TITLE]];
+
+    print "running q-values";
+
+    local lig_atoms = _Atoms 'lig and visible';;
+
+    local wkey = WindowCreate [name    : 'panel'
+    ,   title   : TASK_TITLE
+    ,   text    : 'Close'
+    , onTrigger: 'exit'
+    , Listbox : [
+	    name: 'bondlist', extendH: 1, extendV: 1, width: 80
+	,   multiSelect: 1, onTrigger: 'return', type: 'int', sortEnable: 1
+	,   font: 'Fixed', zebra: 1
+	,   header: LIST_HEADER
+	,   headerBubbleHelp: LIST_HEADERBUBBLEHELP
+	,   bubbleHelp: LIST_BUBBLEHELP
+	]
+    ];
+    WindowSetAttr [wkey,
+    [bondlist: [text:
+	    apt twrite [
+		'{f.2}\t{}\t{}\t{}\t{f.1}\t{}'
+	,	q_values, Tbonds(1), Tbonds(2), substructure_names, dihedrals, dihedral_names
+	    ]
+	]]];
+    WindowSetData [wkey, [bondlist: Tbonds(1)]];
+
+	WindowShow [wkey, 1];
+
+
+    task_prio 0;
+    local gkey = 0;
+    local topostate_old = -1, nviewstate_old = -1, selstate_old = -1;
+    local tor_atoms =  apt get [[lig_atoms], Tbonds];
+    local sel_atoms1, sel_atoms2;
+
+    loop
+        if neL [SystemNonviewState[], nviewstate_old] then
+            gkey = RenderQuality [gkey, lig_atoms, Tbonds, q_values];
+            mkey = Message [mkey, tok_cat ['Q_gmean: ', twrite ['{f.2}', gmean q_values]]];
+            nviewstate_old = SystemNonviewState [];
+        endif
+        local [val,trig] = WindowWait [wkey, [timeout: 0.1]];
+        if trig === 'Close' and val.panel === 'Close' then
+	    break;
+        elseif trig === 'bondlist' then
+        sel_atoms1 = cat get [tor_atoms(1), val.bondlist(1)];
+        sel_atoms2 = cat get [tor_atoms(2), val.bondlist(1)];
+        aSetSelected [Atoms [], 0];
+
+		aSetSelected [sel_atoms1, 1];
+        aSetSelected [sel_atoms2, 1];
+        endif
+    endloop
+
+    GDestroy gkey;
+    WindowDestroy wkey;
+    Message [mkey, []];
+    exit[];
+
+endfunction
+
+
+global function MOE_QValues []
+
+    local tlist = task_keylist [];
+    tlist = tlist | task_title tlist == TASK_TITLE;
+
+    // if 'child' <> second task_fork [		// detach from caller
+	// title:'', errmsg: 'show', creator: 'detach', statics: 'new',
+	// idle: 1
+    // ] then
+	// return;
+    // endif
+
+    // // Fork a cleanup task that will awaken no matter how
+	// // the main task ends (cancel, kill, etc.)
+
+    // local [tid,code] = task_fork [
+	// title   : tok_cat ['! ', TASK_TITLE, ': cleanup']
+    // ,	master  : 'none'
+    // ,	creator : 'detach'
+    // ,	errmsg  : 'ignore'
+    // ,   prio    : 3
+    // ];
+    // if code == 'child' then
+	// sleep 0;			// yield to parent
+	// task_send [tid, []];
+	// exit[];
+    // endif
+
+    if length tlist then			// already running?
+        app task_kill tlist;			// toggle off
+        return;
+    endif
+
+    local ligand_atoms = mget [Atoms[], aClassRLS Atoms[] == 'lig'];
+    ligand_atoms = ligand_atoms | not aInert ligand_atoms and not aHidden ligand_atoms;
+    local num_lig = length uniq aMoleculeNumber ligand_atoms;
+    if  num_lig < 1 then // (length uniq aMoleculeNumber lig) < 1
+        exit 'Please ensure there is at least one visible and active ligand';
+    endif
+    local temp_mdb = fabsname fnametemp tok_cat [TMP, '/', 'moetemp*.mdb'];
+
+    local mdb_key = db_Open [temp_mdb, 'create'];
+    db_EnsureField [ mdb_key, 'mol', 'molecule' ];
+    local mol =  mol_Extract ligand_atoms;
+    db_Write [ mdb_key, 0, ['mol': mol] ];
+    db_Close mdb_key;
+
+    local opt = [
+	MDBfile_base64: r64_encode freadb [temp_mdb, 'char', INT_MAX],
+	MDBfile_base64Content:'base64',
+    gmean:'',
+	molfield: string 'mol'
+    ];
+
+    print  'Connecting to server...';
+
+    local [result, web_code] = web_Call ['QValues', opt, [server: SERVER_URL]];
+    if isnull result then
+	    Warning twrite ['Server response: {}\n', web_code];
+    else
+        print  'Running Q-value analysis ...';
+        local data = result.datafile;
+        render_q_values [data, tlist];
+    endif
+    fdelete temp_mdb;
+endfunction
+
+
+local function ImportQValueMDB[dbfile, datafile]
+    local ents = db_Entries dbfile;
+    local molnames = [];
+    local ient;
+//previous    local molfield = db_FirstFieldType[dbfile, 'molecule'];
+    local fields = db_Fields dbfile;
+    local selfields = dbv_FieldSelection dbfile;
+    if anytrue selfields then
+	selfields = fields(1) | selfields and m_join[
+	    fields(2), ['moe', 'molecule']
+	];
+	if length selfields > 1 then
+	    selfields = first selfields;
+	endif
+    else
+	selfields = [];
+    endif
+    if isnull selfields then
+	selfields = fields(1) | m_join[fields(2), ['moe', 'molecule']];
+	if length selfields > 1 then
+	    selfields = first selfields;
+	endif
+    endif
+    local molfield = selfields;
+    if isnull molfield then
+	exit 'Ligand field not found';
+    endif
+
+    for ient in ents loop
+	local mol = first db_ReadFields[dbfile, ient, molfield];
+
+	molnames = cat[molnames, mol(1)(MOL_NAME)];
+    endloop
+    apt db_EnsureField[dbfile, 'q_gmean', 'float'];
+    apt db_EnsureField[dbfile, '[0, 0.1]', 'int'];
+    apt db_EnsureField[dbfile, '[0.1, 0.3]', 'int'];
+    apt db_EnsureField[dbfile, '[0.3, 0.5]', 'int'];
+    apt db_EnsureField[dbfile, '[0.5, 0.8]', 'int'];
+    apt db_EnsureField[dbfile, '[0.8, 1]', 'int'];
+    local lines = dropfirst freadb[datafile, 'line', INT_MAX];
+    lines = apt fieldsplit[lines, "\t"];
+    local i;
+    for i = 1, length lines loop
+	local iname = token first lines(i);
+	local llen = length lines(i);
+//	local idata = atoi app token dropfirst lines(i);
+	local idata = [];
+    local bin1 = [];
+    local bin2 = [];
+    local bin3 = [];
+    local bin4 = [];
+    local bin5 = [];
+	local nidx = 0;
+
+	if llen > 0 then
+	    // error handling for e.g. >> "Molecule 238 could not be initialized."
+        if length cat lines(i)[2] === 0 then
+            idata = '';
+            bin1 = '';
+            bin2 = '';
+            bin3 = '';
+            bin4 = '';
+            bin5 = '';
+        else
+            idata = atof app token lines(i)[2];
+            bin1 = atof app token lines(i)[3];
+            bin2 = atof app token lines(i)[4];
+            bin3 = atof app token lines(i)[5];
+            bin4 = atof app token lines(i)[6];
+            bin5 = atof app token lines(i)[7];
+            nidx = indexof[iname, molnames];
+        endif
+    endif
+    print lines(i);
+    print idata;
+	if nidx > 0 then
+	    db_Write[dbfile, ents(nidx), tag['q_gmean', idata]];
+        db_Write[dbfile, ents(nidx), tag['[0, 0.1]', bin1]];
+        db_Write[dbfile, ents(nidx), tag['[0.1, 0.3]', bin2]];
+        db_Write[dbfile, ents(nidx), tag['[0.3, 0.5]', bin3]];
+        db_Write[dbfile, ents(nidx), tag['[0.5, 0.8]', bin4]];
+        db_Write[dbfile, ents(nidx), tag['[0.8, 1]', bin5]];
+	// else
+	//     pr "molecule names not identical. please check";
+	endif
+    endloop
+endfunction
+
+
+global function MDB_QValues[]
+    local mdb = dbv_DefaultView[];
+
+    local jopt =  [server: SERVER_URL];
+    if first web_GetServerPing jopt.server then
+		Warning 'Unable to contact MOE/web server. Exit.';
+		return [];
+	else
+	    print 'Server connection successful';
+    endif
+
+    local num_entries = db_nEntries mdb;
+    if num_entries > MAXMOLS then
+	exit twrite [
+	    'Number of ligands {n:} exceeds maximum {n:}', num_entries, MAXMOLS
+	];
+    endif
+
+    local molfield = db_FirstFieldType[mdb, 'molecule'];
+
+    if not explicit_hydrogens_present [mdb, molfield] then
+        Warning 'Make sure all ligands have explicit hydrogens added';
+        return 1;
+    endif
+
+    local entrypool = db_Entries mdb;
+    if dbv_nSelectedEntries mdb > 0 then
+	entrypool = dbv_SelectedEntries mdb;
+    endif
+    local ents = [];
+    local ids = [];
+    local ent = 0;
+    for ent in entrypool loop
+    local mol = first db_ReadFields[mdb, ent, molfield];
+    ents = cat [ents, ent];
+    ids = cat[ids, mol(1)(MOL_NAME)];
+    endloop
+    if sortuniq ids[1] === '' or length sortuniq ids <> length ids then
+       exit 'Please make sure all molecule have names and names are unique.';
+    endif
+
+    local dbf = db_Filename mdb;
+
+    dbv_Close mdb;
+    local opt = [
+	MDBfile_base64: r64_encode freadb [dbf, 'char', INT_MAX],
+	MDBfile_base64Content:'base64',
+    gmean:'--gmean',
+	molfield: string 'mol'
+    ];
+    mdb = dbv_Open dbf;
+
+    local messagekey = Message[0, 'Running Q-value analysis ...'];
+    local [result, code] = web_Call [
+	'QValues',
+	opt,
+	[server: SERVER_URL]
+    ];
+
+    Message[messagekey, []];
+
+    if isnull result then
+	Warning twrite ['Server response: {}\n', code];
+    else
+
+    local data = result.datafile;
+    local datafilename = fabsname '$DOWNLOADS/q_values.csv';
+    print fname datafilename;
+    fwriteb [datafilename, 'char', data];
+
+    ImportQValueMDB[mdb, datafilename];
+
+    endif
+endfunction
+
+
+#eof

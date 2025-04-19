@@ -1,0 +1,14 @@
+---
+name: ccdc_roche_scoring
+channels:
+  - openeye
+  - https://conda.ccdc.cam.ac.uk
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.11
+  - openeye-toolkits
+  - csd-python-api>=3.3
+  - pip
+  - pip:
+      - poetry
