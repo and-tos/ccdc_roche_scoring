@@ -1,10 +1,13 @@
 # ccdc_roche_scoring
 
-Contains code for template based docking and RF-PLP scoring function.
 
-Please cite:
+For template based docking and RF-PLP scoring function please cite:
 
 Tosstorff, A. et al. A high quality, industrial data set for binding affinity prediction: performance comparison in different early drug discovery scenarios. J. Comput. Aid. Mol. Des. 36, 753–765 (2022).
+
+For redocking and molecular recognition of docking vs experimental data please cite:
+
+Tosstorff, A., Kuhn, B. Comparison of molecular recognition in docking versus experimental CSD and PDB data.
 
 ---
 **Installation**
