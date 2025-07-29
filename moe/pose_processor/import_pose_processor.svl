@@ -34,8 +34,8 @@
 #set class 	'CCG:Support'
 #set version 	'2022.02'
 
-const SERVER_URL = 'http://moe-soap.bas.roche.com:8890';
-// const SERVER_URL = 'http://rkanc004is02.eth.rsiec.kau.science.roche.com:8888';
+const SERVER_URL = 'server_url';
+
 const CLASH_COUNTS = ['acc_acc_contact', 'don_don_contact', 'intramolecular_steric_clashes', 'cis_amides', 'q2_gmean'];
 
 #if OS_MSWIN

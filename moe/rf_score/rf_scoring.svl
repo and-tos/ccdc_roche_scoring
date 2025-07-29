@@ -18,8 +18,7 @@ function DescriptorList;
 // Server address
 //------------------------------------------------------------------------------
 
-//const SERVER_URL = 'http://rkanc001is01.eth.rsiec.kau.science.roche.com:8008';
-const SERVER_URL = 'http://moe-soap.bas.roche.com:8890';
+const SERVER_URL = 'server_url';
 
 //------------------------------------------------------------------------------
 

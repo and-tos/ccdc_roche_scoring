@@ -1,7 +1,5 @@
 // Exectute workflow to dock ligands to templates from MOE Project
-const SERVER_URL = 'http://rkanc001is01.eth.rsiec.kau.science.roche.com:8808';
-
-//const SERVER_URL = 'http://moe-soap.bas.roche.com:8890';
+const SERVER_URL = 'server_url';
 
 function db_ImportSD, db_ImportMOL2, db_FieldCopy, db_Merge, db_ReorderFields, db_Fields, db_ExportSD, dbv_Open;
 function fwrite_PDB, fwrite_MDLMOL, fwrite_TriposMOL2, _RenderShow;
