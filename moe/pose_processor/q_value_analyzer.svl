@@ -4,8 +4,8 @@
 #set version	'2023.07'
 #set class 	'CCG:Support'
 
-const SERVER_URL = 'http://moe-soap.bas.roche.com:8890';
-// const SERVER_URL = 'http://rkanc004is02.eth.rsiec.kau.science.roche.com:8888';
+const SERVER_URL = 'serv_url';
+
 
 const TASK_TITLE = 'Ligand Torsion q-values';
 const SHOW_PANEL = 0;				// show GUI panel (RC def)
