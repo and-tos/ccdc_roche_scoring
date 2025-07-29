@@ -2,6 +2,8 @@ import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 from matplotlib.font_manager import fontManager, FontProperties
+from matplotlib.colors import LogNorm
+import matplotlib.colors as mcolors
 from collections import defaultdict
 from pathlib import Path
 from rdkit.Chem import PandasTools
@@ -70,7 +72,7 @@ def plot_distributions(
         ],
         ax=ax,
     )
-    f.set_xlim([-0.1, 8])
+    f.set_xlim(-0.1, 8)
     f.xaxis.minorticks_on()
     f.xaxis.grid(which="major", color="w", linewidth=1.0)
     f.xaxis.grid(which="minor", color="w", linewidth=0.5)
@@ -78,7 +80,7 @@ def plot_distributions(
         box_aspect=1,
     )
     if ax is None:
-        f.figure.savefig(outfile, dpi=300, bbox_inches="tight")
+        f.figure.savefig(outfile, dpi=150, bbox_inches="tight")
         f.figure.clf()
     return
 
@@ -187,7 +189,11 @@ def write_rmsd_df():
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6))
     df = pd.read_csv("rmsd.csv")
     df = df.rename(columns={"vina_rmsd": "Vina RMSD [Å]", "gold_rmsd": "GOLD RMSD [Å]"})
-    rmsd_plot = rmsd_correlation_plot(df, ax2)
+    rmsd_plot = rmsd_correlation_plot(df, ax=ax2)
+    fig.subplots_adjust(right=0.8)
+    cbar_ax = fig.add_axes([0.85, 0.185, 0.02, 0.6])
+    fig.colorbar(rmsd_plot, cax=cbar_ax)
+    cbar_ax.set_ylabel("Number of binding sites")
 
     vina_df = df[["identifier", "Vina RMSD [Å]"]]
     gold_df = df[["identifier", "GOLD RMSD [Å]"]]
@@ -200,9 +206,10 @@ def write_rmsd_df():
 
     rmsd_df = pd.concat([vina_df, gold_df], ignore_index=True)
     dist_plot = plot_distributions(rmsd_df, ax1)
-    fig.figure.savefig("figure1.tif", dpi=300, bbox_inches="tight")
+    fig.figure.savefig("figure1.tif", dpi=150, bbox_inches="tight")
     fig.figure.clf()
     df.to_csv("rmsd.csv", index=False)
+
     return rmsd_df
 
 
@@ -254,30 +261,98 @@ def rmsd_comparison():
     # return rmsd_df
 
 
-def rmsd_correlation_plot(df, ax=None, return_plot=True):
+def rmsd_normalized_prop_plot(
+    hist2d,
+    x="Vina RMSD [Å]",
+    y="GOLD RMSD [Å]",
+    ax=None,
+    axlim: tuple = (0, 20),
+    cbar_ax=None,
+):
     path = "Roche_fonts/Roche Sans/RocheSansLight-Medium.ttf"
     fontManager.addfont(path)
     prop = FontProperties(fname=path)
     sns.set(font=prop.get_name())
-    plot = sns.scatterplot(
-        df,
-        x="Vina RMSD [Å]",
-        y="GOLD RMSD [Å]",
-        color=roche_branding.RocheColours().roche_colours_rgb_dict["roche_blue"],
-        s=8,
-        ax=ax,
-    )
-    plot_unity(df["Vina RMSD [Å]"], df["GOLD RMSD [Å]"])
-    plot.set(
-        box_aspect=1,
-    )
 
-    if return_plot:
-        return plot
-    else:
-        plot.figure.savefig("rmsd_vina_vs_gold.tif", dpi=300)
-        plot.figure.clf()
-        return
+    # Define the colors for the colormap: light blue and darker blue
+    dark_blue = roche_branding.RocheColours().roche_colours_rgb_dict["roche_blue"]
+    light_blue = roche_branding.RocheColours().roche_colours_rgb_dict[
+        "extra_light_blue"
+    ]
+
+    # Create a custom colormap
+    cmap = mcolors.LinearSegmentedColormap.from_list(
+        "custom_cmap", [light_blue, dark_blue, "black"], N=512
+    )
+    plot = sns.heatmap(
+        hist2d,
+        cmap=cmap,
+        ax=ax,
+        vmin=0.01,
+        vmax=1,
+        norm="log",
+        cbar=True,
+        cbar_ax=cbar_ax,
+    )
+    # plot = ax.imshow(
+    #     hist2d,
+    #     cmap=cmap,
+    #     vmin=0.01,
+    #     vmax=1,
+    #     norm="log",
+    # )
+    ax.set_xlabel(x)
+    ax.set_ylabel(y)
+    if axlim:
+        ax.set_xlim(*axlim)
+        ax.set_ylim(*axlim)
+    ax.grid(True, color="lightgrey")
+    ax.set_facecolor("white")
+    # ax.set_aspect("equal")
+
+    return plot
+
+
+def rmsd_correlation_plot(
+    df,
+    x="Vina RMSD [Å]",
+    y="GOLD RMSD [Å]",
+    ax=None,
+    axlim: tuple = (0, 20),
+    unity: bool = True,
+    outname: str = "rmsd_vina_vs_gold.tif",
+):
+
+    path = "Roche_fonts/Roche Sans/RocheSansLight-Medium.ttf"
+    fontManager.addfont(path)
+    prop = FontProperties(fname=path)
+    sns.set(font=prop.get_name())
+
+    # Define the colors for the colormap: light blue and darker blue
+    dark_blue = roche_branding.RocheColours().roche_colours_rgb_dict["roche_blue"]
+    light_blue = roche_branding.RocheColours().roche_colours_rgb_dict[
+        "extra_light_blue"
+    ]
+
+    # Create a custom colormap
+    cmap = mcolors.LinearSegmentedColormap.from_list(
+        "custom_cmap", [light_blue, dark_blue, "black"], N=512
+    )
+    plot = ax.hexbin(
+        df[x], df[y], gridsize=20, bins="log", cmap=cmap, vmin=1, vmax=100000
+    )
+    ax.set_xlabel(x)
+    ax.set_ylabel(y)
+    if axlim:
+        ax.set_xlim(*axlim)
+        ax.set_ylim(*axlim)
+    if unity:
+        plot_unity(df[x], df[y])
+    ax.grid(True, color="lightgrey")
+    ax.set_facecolor("white")
+    ax.set_aspect("equal")
+
+    return plot
 
 
 def rf_correlation_plot(df):
@@ -524,6 +599,59 @@ def return_recovery_dict(_, df, randomize=False):
     return recovery, vina_df, rf_df, rfq_df, q_gmean_df, random_df
 
 
+def return_sorted_dfs(_, df, randomize=False):
+    if randomize:
+        random_bs_ids = pd.Series(df["bs_id"].unique()).sample(frac=1, replace=True)
+
+    # RF recovery
+    rf_df = df.sort_values("atom_rf_gmean", ascending=False)
+    if randomize:
+        rf_df = pd.DataFrame({"bs_id": random_bs_ids}).join(
+            rf_df.set_index("bs_id"), on="bs_id"
+        )
+    print(rf_df.shape[0])
+
+    # RF * q_gmean recovery
+    rfq_df = df.sort_values(["rfq", "atom_rf_gmean"], ascending=[False, False])
+    if randomize:
+        rfq_df = pd.DataFrame({"bs_id": random_bs_ids}).join(
+            rfq_df.set_index("bs_id"), on="bs_id"
+        )
+    print(rfq_df.shape[0])
+
+    # q_gmean recovery
+    q_gmean_df = df.sort_values(["q_gmean", "vina_score"], ascending=[False, True])
+    if randomize:
+        q_gmean_df = pd.DataFrame({"bs_id": random_bs_ids}).join(
+            q_gmean_df.set_index("bs_id"), on="bs_id"
+        )
+    print(q_gmean_df.shape[0])
+
+    # Vina recovery
+    vina_df = df.sort_values("vina_score", ascending=True)
+    if randomize:
+        vina_df = pd.DataFrame({"bs_id": random_bs_ids}).join(
+            vina_df.set_index("bs_id"), on="bs_id"
+        )
+    print(vina_df.shape[0])
+
+    # Random recovery
+    random_df = df.sample(frac=1)
+    if randomize:
+        random_df = pd.DataFrame({"bs_id": random_bs_ids}).join(
+            random_df.set_index("bs_id"), on="bs_id"
+        )
+    print(random_df.shape[0])
+
+    vina_df["rescoring_method"] = "docking"
+    rf_df["rescoring_method"] = "Atom R$_{F}$ Gmean"
+    rfq_df["rescoring_method"] = "R$_{F}$Q"
+    q_gmean_df["rescoring_method"] = "q$_{gmean}$"
+    random_df["rescoring_method"] = "random"
+
+    return vina_df, rf_df, rfq_df, q_gmean_df, random_df
+
+
 def return_recovery_plot(recovery, outname, ax=None):
     # generate plot
     path = "Roche_fonts/Roche Sans/RocheSansLight-Medium.ttf"
@@ -702,13 +830,176 @@ def plot_experimental_pose_recovery():
     return
 
 
+def bin_dataframe(df, y, bins: list = []):
+    "Returns dataframe with x on columns y on index and frequencies in cells."
+    df["vina_bins"] = pd.cut(
+        df["Vina RMSD [Å]"], [0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 5, 16]
+    )
+    df["y_bins"] = pd.cut(df[y], bins)
+    hist_df = pd.crosstab(index=df["y_bins"], columns=df["vina_bins"])
+    hist_df = hist_df.reindex(index=hist_df.index[::-1])
+    return hist_df
+
+
+def props_vs_rmsd():
+    path = "Roche_fonts/Roche Sans/RocheSansLight-Medium.ttf"
+    fontManager.addfont(path)
+    prop = FontProperties(fname=path)
+    sns.set(font=prop.get_name())
+
+    df = pd.read_parquet("native_and_docking_pose_check_qmean.gzip")
+    df = df.sort_values("vina_score").drop_duplicates("bs_id")
+
+    adf = pd.read_parquet("pub_roche_project_annotation_2024-12-03.gz")
+    adf["identifier"] = adf["bs_id"]
+    sq = structure_quality.StructureQuality(adf)
+    low_quality_bs_ids = sq.low_quality_bs_ids
+    adf = adf[["bs_id", "RESOLUTION"]]
+
+    descriptors = [
+        "NumRotatableBonds",
+        "NumAromaticRings",
+        "Molecular weight [g/mol]",
+        "Resolution [Å]",
+    ]
+    df = df.join(adf.set_index("bs_id"), on="bs_id")
+    df = df.rename(
+        columns={
+            "rmsd": "Vina RMSD [Å]",
+            "RESOLUTION": "Resolution [Å]",
+            "MW": "Molecular weight [g/mol]",
+        }
+    )
+    df = df[["bs_id", "Vina RMSD [Å]"] + descriptors]
+    df = df[df["bs_id"].isin(low_quality_bs_ids) == False]
+    df = df[df["Resolution [Å]"] > 0]
+    fig, axes = plt.subplots(2, 2, figsize=(12, 12))
+    fig.subplots_adjust(right=0.8)
+    cbar_ax = fig.add_axes([0.85, 0.15, 0.02, 0.7])
+
+    for cnt, descriptor in enumerate(descriptors):
+        bins = list(range(int(df[descriptor].max())))
+        if descriptor == "Resolution [Å]":
+            bins = [x / 10 for x in range(5, 30, 5)]
+        if descriptor == "Molecular weight [g/mol]":
+            bins = list(range(50, 1000, 50))
+        hist_2d = bin_dataframe(df, descriptor, bins)
+        for i in hist_2d.index:
+            hist_2d.loc[i, :] = hist_2d.loc[i] / hist_2d.loc[i].sum()
+        ax = axes.flatten()[cnt]
+        rmsd_plot = rmsd_normalized_prop_plot(
+            hist_2d, "Vina RMSD [Å]", descriptor, ax, axlim=(), cbar_ax=cbar_ax
+        )
+
+    cbar_ax.set_ylabel("Number of poses normalized by descriptor bin")
+    cbar_ax.set_label("Number of poses normalized by descriptor bin")
+    fig.subplots_adjust(hspace=0.3)
+    fig.figure.savefig("figureS1.tif", dpi=100, bbox_inches="tight")
+    fig.figure.clf()
+
+    fig, axes = plt.subplots(2, 2, figsize=(12, 12))
+
+    for cnt, descriptor in enumerate(descriptors):
+        bins = list(range(int(df[descriptor].max())))
+        if descriptor == "Resolution [Å]":
+            bins = [x / 10 for x in range(5, 30, 5)]
+        if descriptor == "Molecular weight [g/mol]":
+            bins = list(range(50, 1000, 50))
+        ax = axes.flatten()[cnt]
+        sns.histplot(
+            df,
+            x=descriptor,
+            bins=bins,
+            color=roche_branding.RocheColours().roche_colours_rgb_dict["roche_blue"],
+            ax=ax,
+        )
+    fig.figure.savefig("figureS2.tif", dpi=100, bbox_inches="tight")
+    return
+
+
+def plot_native_pose_rank():
+    df = pd.read_parquet("native_and_docking_pose_check_qmean.gzip")
+    df["q_gmean"] = df["q_gmean"].fillna(1)
+    df["rfq"] = df["atom_rf_gmean"] * df["q_gmean"].fillna(1)
+    df = df[
+        [
+            "bs_id",
+            "dataset",
+            "q_gmean",
+            "atom_rf_gmean",
+            "rfq",
+            "vina_score",
+            "rmsd",
+        ]
+    ]
+    dfs = return_sorted_dfs(1, df, randomize=False)
+    df = pd.concat(dfs, ignore_index=True)
+    df["Experimental pose rank"] = (
+        df.groupby(["bs_id", "rescoring_method"]).cumcount().astype(int)
+    )
+    df = df[df["dataset"] == "native"]
+    fig, axes = plt.subplots(3, 2, figsize=(18, 12))
+    fig.subplots_adjust(hspace=0.3)
+    axes = axes.flatten()
+    bins = range(0, 21)
+    for cnt, (rescoring_method, gdf) in enumerate(df.groupby("rescoring_method")):
+        hist_plot = sns.histplot(
+            gdf,
+            x="Experimental pose rank",
+            bins=range(22),
+            color=roche_branding.RocheColours().roche_colours_rgb_dict["roche_blue"],
+            ax=axes[cnt],
+        )
+        hist_plot.set_title(rescoring_method, y=1.0, pad=-14)
+        hist_plot.set_xticks([b + 0.5 for b in bins])
+        hist_plot.set_xticklabels([b + 1 for b in bins])
+
+    axes[-1].remove()
+    fig.figure.savefig(
+        f"figureS5.tif",
+        dpi=100,
+        bbox_inches="tight",
+    )
+    fig.figure.clf()
+    return
+
+
+def plot_lowest_rmsd():
+    df = pd.read_parquet("native_and_docking_pose_check_qmean.gzip")
+    df = df[df["dataset"] == "vina"]
+    best_rmsd_df = df.sort_values("rmsd", ascending=True).drop_duplicates("bs_id")
+    best_rmsd_df["Dataset"] = "Docked pose with lowest RMSD"
+
+    best_score_df = df.sort_values("vina_score", ascending=True).drop_duplicates(
+        "bs_id"
+    )
+    best_score_df["Dataset"] = "Docked pose with best score"
+    df = pd.concat([best_rmsd_df, best_score_df])
+    df = df.rename(columns={"rmsd": "RMSD [Å]"})
+
+    sdf = pd.read_parquet("pub_roche_project_annotation_2024-12-03.gz")
+    sdf = sdf.rename(columns={"bs_id": "identifier"})
+    struc_qual = structure_quality.StructureQuality(sdf)
+    df = df[df["bs_id"].isin(struc_qual.low_quality_bs_ids) == False]
+    dist_plot = plot_distributions(
+        df,
+        hue="Dataset",
+        outfile="figureS4.tif",
+    )
+
+    return
+
+
 def main():
     # rmsd_df = rmsd_comparison()
-    rf_df = rf_comparison()
-    # rf_df.to_csv("rf_vina_vs_pdb.csv", index=False)
-    rf_df = pd.read_csv("rf_vina_vs_pdb.csv")
-    plot_relative_rf(rf_df)
-    plot_experimental_pose_recovery()
+    # rf_df = rf_comparison()
+    # # rf_df.to_csv("rf_vina_vs_pdb.csv", index=False)
+    # rf_df = pd.read_csv("rf_vina_vs_pdb.csv")
+    # plot_relative_rf(rf_df)
+    # plot_experimental_pose_recovery()
+    plot_native_pose_rank()
+    # props_vs_rmsd()
+    # plot_lowest_rmsd()
     return
 
 
